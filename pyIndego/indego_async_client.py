@@ -4,7 +4,7 @@ import logging
 import json
 import time
 from socket import error as SocketError
-from typing import Any, Optional, Callable, Awaitable
+from typing import Any, Optional, Callable, Awaitable, Dict, List
 
 import aiohttp
 from aiohttp import (
@@ -24,7 +24,8 @@ from .const import (
 )
 from .indego_base_client import IndegoBaseClient
 from .states import Calendar
-from .helpers import random_request_id
+from .helpers import random_request_id, validate_command, validate_mow_mode
+from .exceptions import IndegoConnectionError, IndegoRequestError, IndegoAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,10 +37,10 @@ class IndegoAsyncClient(IndegoBaseClient):
         self,
         token: str,
         token_refresh_method: Optional[Callable[[], Awaitable[str]]] = None,
-        serial: str = None,
-        map_filename: str = None,
+        serial: Optional[str] = None,
+        map_filename: Optional[str] = None,
         api_url: str = DEFAULT_URL,
-        session: aiohttp.ClientSession = None,
+        session: Optional[aiohttp.ClientSession] = None,
         raise_request_exceptions: bool = False,
     ):
         """Initialize the Async Client.
@@ -84,14 +85,14 @@ class IndegoAsyncClient(IndegoBaseClient):
         if self._should_close_session:
             await self._session.close()
 
-    async def get_mowers(self):
+    async def get_mowers(self) -> List[str]:
         """Get a list of the available mowers (serials) in the account."""
         result = await self.get("alms")
         if result is None:
             return []
         return [mower['alm_sn'] for mower in result]
 
-    async def delete_alert(self, alert_index: int):
+    async def delete_alert(self, alert_index: int) -> Optional[Any]:
         """Delete the alert with the specified index.
 
         Args:
@@ -101,10 +102,11 @@ class IndegoAsyncClient(IndegoBaseClient):
         if not self._alerts_loaded:
             raise ValueError("Alerts not loaded, please run update_alerts first.")
         alert_id = self._get_alert_by_index(alert_index)
-        if alert_id:
-            return await self._request(Methods.DELETE, f"alerts/{alert_id}/")
+        if alert_id is None:
+            return None
+        return await self._request(Methods.DELETE, f"alerts/{alert_id}/")
 
-    async def delete_all_alerts(self):
+    async def delete_all_alerts(self) -> Optional[List]:
         """Delete all the alert."""
         if not self._alerts_loaded:
             raise ValueError("Alerts not loaded, please run update_alerts first.")
@@ -118,7 +120,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         _LOGGER.info("No alerts to delete")
         return None
 
-    async def download_map(self, filename: str = None):
+    async def download_map(self, filename: Optional[str] = None) -> None:
         """Download the map.
 
         Args:
@@ -136,7 +138,7 @@ class IndegoAsyncClient(IndegoBaseClient):
             with open(self.map_filename, "wb") as file:
                 file.write(lawn_map)
 
-    async def put_alert_read(self, alert_index: int):
+    async def put_alert_read(self, alert_index: int) -> Optional[Any]:
         """Set the alert to read.
 
         Args:
@@ -151,7 +153,7 @@ class IndegoAsyncClient(IndegoBaseClient):
                 Methods.PUT, f"alerts/{alert_id}", data={"read_status": "read"}
             )
 
-    async def put_all_alerts_read(self):
+    async def put_all_alerts_read(self) -> Optional[List]:
         """Set to read the read_status of all alerts."""
         if not self._alerts_loaded:
             raise ValueError("Alerts not loaded, please run update_alerts first.")
@@ -169,7 +171,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         _LOGGER.info("No alerts to set to read")
         return None
 
-    async def put_command(self, command: str):
+    async def put_command(self, command: str) -> Optional[Any]:
         """Send a command to the mower.
 
         Args:
@@ -179,13 +181,13 @@ class IndegoAsyncClient(IndegoBaseClient):
             str: either result of the call or 'Wrong Command'
 
         """
-        if command in COMMANDS:
-            if not self.serial:
-                return
-            return await self.put(f"alms/{self.serial}/state", {"state": command})
-        raise ValueError("Wrong Command, use one of 'mow', 'pause', 'returnToDock'")
+        if not validate_command(command):
+            raise ValueError("Wrong Command, use one of 'mow', 'pause', 'returnToDock'")
+        if not self.serial:
+            return
+        return await self.put(f"alms/{self.serial}/state", {"state": command})
 
-    async def put_mow_mode(self, command: Any):
+    async def put_mow_mode(self, command: Any) -> Optional[Any]:
         """Set the mower to mode manual (false-ish) or predictive (true-ish).
 
         Args:
@@ -195,15 +197,15 @@ class IndegoAsyncClient(IndegoBaseClient):
             str: either result of the call or 'Wrong Command'
 
         """
-        if command in ("true", "false", "True", "False") or isinstance(command, bool):
-            if not self.serial:
-                return
-            return await self.put(
-                f"alms/{self.serial}/predictive", {"enabled": command}
-            )
-        raise ValueError("Wrong Command, use one True or False")
+        if not validate_mow_mode(command):
+            raise ValueError("Wrong Command, use one True or False")
+        if not self.serial:
+            return
+        return await self.put(
+            f"alms/{self.serial}/predictive", {"enabled": command}
+        )
 
-    async def put_predictive_cal(self, calendar: dict = DEFAULT_CALENDAR):
+    async def put_predictive_cal(self, calendar: Dict = DEFAULT_CALENDAR) -> Optional[Any]:
         """Set the predictive calendar."""
         try:
             Calendar(**calendar["cals"][0])
@@ -213,16 +215,16 @@ class IndegoAsyncClient(IndegoBaseClient):
             return
         return await self.put(f"alms/{self.serial}/predictive/calendar", calendar)
 
-    async def update_alerts(self):
+    async def update_alerts(self) -> None:
         """Update alerts."""
         self._update_alerts(await self.get("alerts"))
 
-    async def get_alerts(self):
+    async def get_alerts(self) -> List:
         """Update alerts and return them."""
         await self.update_alerts()
         return self.alerts
 
-    async def update_all(self):
+    async def update_all(self) -> None:
         """Update all states."""
         update_list = [
             self.update_alerts(),
@@ -247,7 +249,7 @@ class IndegoAsyncClient(IndegoBaseClient):
             if res:
                 _LOGGER.warning(res)
 
-    async def update_calendar(self):
+    async def update_calendar(self) -> None:
         """Update calendar."""
         if not self.serial:
             return
@@ -258,7 +260,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_calendar()
         return self.calendar
 
-    async def update_config(self):
+    async def update_config(self) -> None:
         """Update config."""
         if not self.serial:
             return
@@ -269,7 +271,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_config()
         return self.config
 
-    async def update_generic_data(self):
+    async def update_generic_data(self) -> None:
         """Update generic data."""
         if not self.serial:
             return
@@ -280,7 +282,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_generic_data()
         return self.generic_data
 
-    async def update_last_completed_mow(self):
+    async def update_last_completed_mow(self) -> None:
         """Update last completed mow."""
         if not self.serial:
             return
@@ -293,7 +295,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_last_completed_mow()
         return self.last_completed_mow
 
-    async def update_location(self):
+    async def update_location(self) -> None:
         """Update location."""
         if not self.serial:
             return
@@ -304,7 +306,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_location()
         return self.location
 
-    async def update_network(self):
+    async def update_network(self) -> None:
         """Update network."""
         if not self.serial:
             return
@@ -315,7 +317,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_network()
         return self.network
 
-    async def update_next_mow(self):
+    async def update_next_mow(self) -> None:
         """Update next mow datetime."""
         if not self.serial:
             return
@@ -328,7 +330,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_next_mow()
         return self.next_mow
 
-    async def update_operating_data(self):
+    async def update_operating_data(self) -> None:
         """Update operating data."""
         if not self.serial:
             return
@@ -339,7 +341,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_operating_data()
         return self.operating_data
 
-    async def update_predictive_calendar(self):
+    async def update_predictive_calendar(self) -> None:
         """Update predictive_calendar."""
         if not self.serial:
             return
@@ -352,7 +354,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_predictive_calendar()
         return self.predictive_calendar
 
-    async def update_predictive_schedule(self):
+    async def update_predictive_schedule(self) -> None:
         """Update predictive_schedule."""
         if not self.serial:
             return
@@ -365,7 +367,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_predictive_schedule()
         return self.predictive_schedule
 
-    async def update_security(self):
+    async def update_security(self) -> None:
         """Update security."""
         if not self.serial:
             return
@@ -376,7 +378,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_security()
         return self.security
 
-    async def update_setup(self):
+    async def update_setup(self) -> None:
         """Update setup."""
         if not self.serial:
             return
@@ -387,7 +389,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_setup()
         return self.setup
 
-    async def update_state(self, force=False, longpoll=False, longpoll_timeout=120):
+    async def update_state(self, force=False, longpoll=False, longpoll_timeout=120) -> None:
         """Update state. Can be both forced and with longpoll.
 
         Args:
@@ -434,7 +436,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_state(force, longpoll, longpoll_timeout)
         return self.state
 
-    async def update_updates_available(self):
+    async def update_updates_available(self) -> None:
         """Update updates available."""
         if not self.serial:
             return
@@ -448,7 +450,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_updates_available()
         return self.update_available
 
-    async def update_user(self):
+    async def update_user(self) -> None:
         """Update users."""
         self._update_user(await self.get(f"users/{self._userid}"))
 
@@ -461,10 +463,10 @@ class IndegoAsyncClient(IndegoBaseClient):
         self,
         method: Methods,
         path: str,
-        data: dict = None,
-        headers: dict = None,
+        data: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
         timeout: int = 30
-    ):
+    ) -> Optional[Any]:
         """Request implemented by the subclasses either synchronously or asynchronously.
 
         Args:
@@ -572,7 +574,7 @@ class IndegoAsyncClient(IndegoBaseClient):
             )
             return None
 
-    async def get(self, path: str, timeout: int = 30):
+    async def get(self, path: str, timeout: int = 30) -> Optional[Any]:
         """Get implemented by the subclasses either synchronously or asynchronously.
 
         Args:
@@ -582,7 +584,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         """
         return await self._request(method=Methods.GET, path=path, timeout=timeout)
 
-    async def put(self, path: str, data: dict, timeout: int = 30):
+    async def put(self, path: str, data: Dict, timeout: int = 30) -> Optional[Any]:
         """Put implemented by the subclasses either synchronously or asynchronously.
 
         Args:

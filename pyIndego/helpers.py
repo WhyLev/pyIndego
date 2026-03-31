@@ -69,3 +69,34 @@ def generate_update(field: Any, new: dict, new_class: Any):
 def random_request_id() -> str:
     """A random ID for API request to for easier tracking of corresponding log messages."""
     return ''.join(random.choices('ABCDEF' + string.digits, k=6))
+
+
+def validate_command(command: str) -> bool:
+    """Validate mower command.
+
+    Args:
+        command (str): Command string to validate
+
+    Returns:
+        bool: True if valid command, False otherwise
+
+    Valid commands: 'mow', 'pause', 'returnToDock'
+    """
+    valid_commands = ('mow', 'pause', 'returnToDock')
+    return command in valid_commands
+
+
+def validate_mow_mode(mode: Any) -> bool:
+    """Validate mow mode.
+
+    Args:
+        mode (str/bool): Mode to validate
+
+    Returns:
+        bool: True if valid mode, False otherwise
+
+    Valid modes: 'true', 'false', 'True', 'False', or boolean True/False
+    """
+    valid_modes = ("true", "false", "True", "False")
+    return mode in valid_modes or isinstance(mode, bool)
+

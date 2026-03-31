@@ -1,7 +1,7 @@
 """Base class for indego."""
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Callable, Awaitable
+from typing import Any, Optional, Callable, Awaitable, Dict, List
 
 import pytz
 
@@ -40,12 +40,12 @@ class IndegoBaseClient(ABC):
         self,
         token: str,
         token_refresh_method: Optional[Callable[[], Awaitable[str]]] = None,
-        serial: str = None,
-        map_filename: str = None,
+        serial: Optional[str] = None,
+        map_filename: Optional[str] = None,
         api_url: str = DEFAULT_URL,
         raise_request_exceptions: bool = False,
     ):
-        """Abstract class for the Indego Clent, only use the Indego Client or Indego Async Client.
+        """Abstract class for the Indego Client, only use the Indego Client or Indego Async Client.
 
         Args:
             token (str): Bosch SingleKey ID OAuth token
@@ -159,43 +159,43 @@ class IndegoBaseClient(ABC):
 
     # Methods
     @abstractmethod
-    def delete_alert(self, alert_index: int):
+    def delete_alert(self, alert_index: int) -> Optional[Any]:
         """Delete the alert with the specified index."""
 
     @abstractmethod
-    def delete_all_alerts(self):
+    def delete_all_alerts(self) -> Optional[List]:
         """Delete all the alerts."""
 
     @abstractmethod
-    def download_map(self, filename=None):
+    def download_map(self, filename: Optional[str] = None) -> None:
         """Download the map."""
 
     @abstractmethod
-    def put_alert_read(self, alert_index: int):
+    def put_alert_read(self, alert_index: int) -> Optional[Any]:
         """Set to read the read_status of the alert with the specified index."""
 
     @abstractmethod
-    def put_all_alerts_read(self):
+    def put_all_alerts_read(self) -> Optional[List]:
         """Set to read the read_status of all alerts."""
 
     @abstractmethod
-    def put_command(self, command: str):
+    def put_command(self, command: str) -> Optional[Any]:
         """Send a command to the mower."""
 
     @abstractmethod
-    def put_mow_mode(self, command: Any):
+    def put_mow_mode(self, command: Any) -> Optional[Any]:
         """Set the mower to mode manual (false-ish) or predictive (true-ish)."""
 
     @abstractmethod
-    def put_predictive_cal(self, calendar: dict = DEFAULT_CALENDAR):
+    def put_predictive_cal(self, calendar: Dict = DEFAULT_CALENDAR) -> Optional[Any]:
         """Set the predictive calendar."""
 
     @abstractmethod
-    def update_alerts(self):
+    def update_alerts(self) -> None:
         """Update alerts."""
 
     @abstractmethod
-    def get_alerts(self):
+    def get_alerts(self) -> List:
         """Update alerts and return them."""
 
     def _update_alerts(self, new):
@@ -207,11 +207,11 @@ class IndegoBaseClient(ABC):
             self.alerts = []
 
     @abstractmethod
-    def update_all(self):
+    def update_all(self) -> None:
         """Update all states."""
 
     @abstractmethod
-    def update_calendar(self):
+    def update_calendar(self) -> None:
         """Update calendar."""
 
     @abstractmethod
@@ -224,7 +224,7 @@ class IndegoBaseClient(ABC):
             self.calendar = generate_update(self.calendar, new["cals"][0], Calendar)
 
     @abstractmethod
-    def update_config(self):
+    def update_config(self) -> None:
         """Update config."""
 
     @abstractmethod
@@ -426,8 +426,7 @@ class IndegoBaseClient(ABC):
         """Request implemented by the subclasses either synchronously or asynchronously."""
 
     def _log_request_result(self, request_id: str, status: int, url: str) -> bool:
-        """Log the API request result for certain status codes."""
-        """Return False if the status is fatal and should be raised."""
+        """Log the API request result and return False if status is fatal."""
 
         if status == 204:
             _LOGGER.debug("[%s] 204: No content in response from server, ignoring", request_id)
@@ -452,7 +451,7 @@ class IndegoBaseClient(ABC):
         """Put implemented by the subclasses either synchronously or asynchronously."""
 
     # internal methods
-    def _get_alert_by_index(self, alert_index: int) -> int:
+    def _get_alert_by_index(self, alert_index: int) -> Optional[str]:
         """Return the alert_id based on index."""
         if not self._alerts_loaded:
             raise ValueError("Alerts not loaded, please run update_alerts first.")
@@ -473,11 +472,28 @@ class IndegoBaseClient(ABC):
                 self.generic_data.model_voltage
             )
 
-    def set_default_header(self, key: str, value: str):
+    def set_default_header(self, key: str, value: str) -> None:
+        """Set a default header for all requests.
+
+        Args:
+            key (str): Header key
+            value (str): Header value
+        """
         if value is None or value == "":
             return
         self._default_headers[key] = value
         _LOGGER.debug("Default request headers updated: '%s'", self._default_headers)
+
+    def _ensure_serial(self) -> bool:
+        """Check if serial is available and log warning if not.
+
+        Returns:
+            bool: True if serial is set, False otherwise
+        """
+        if not self.serial:
+            _LOGGER.warning("Serial number not set. Please login first.")
+            return False
+        return True
 
     def __repr__(self):
         """Create a string representing the mower."""
