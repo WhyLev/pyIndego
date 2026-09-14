@@ -1,5 +1,6 @@
 """Constants for pyIndego."""
 from enum import Enum
+
 from pyIndego.version import __version__
 
 

@@ -1,22 +1,25 @@
 """Base class for indego."""
+import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Optional
 
 import pytz
 
 from .const import (
-    DEFAULT_HEADERS,
     DEFAULT_CALENDAR,
+    DEFAULT_HEADERS,
     DEFAULT_LOOKUP_VALUE,
     DEFAULT_URL,
     MOWER_STATE_DESCRIPTION,
     MOWER_STATE_DESCRIPTION_DETAIL,
     Methods,
 )
-from .helpers import convert_bosch_datetime, generate_update
-from .states import (
+from .exceptions import IndegoIndexError, IndegoNotLoadedError
+from .helpers import convert_bosch_datetime
+from .models import (
     Alert,
+    AutomaticUpdate,
     Calendar,
     Config,
     GenericData,
@@ -24,10 +27,13 @@ from .states import (
     Network,
     OperatingData,
     PredictiveSchedule,
+    PredictiveSetup,
     Security,
     Setup,
     State,
     User,
+    Weather,
+    generate_update,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,7 +59,8 @@ class IndegoBaseClient(ABC):
             serial (str): serial number of the mower
             map_filename (str, optional): Filename to store maps in. Defaults to None.
             api_url (str, optional): url for the api, defaults to DEFAULT_URL.
-            raise_request_exceptions (bool): Should unexpected API request exception be raised or not. Default False to keep things backwards compatible.
+            raise_request_exceptions (bool): Should unexpected API request exceptions be raised
+                or not. Default False to keep things backwards compatible.
         """
         self._default_headers = DEFAULT_HEADERS.copy()
         self._token = token
@@ -70,6 +77,7 @@ class IndegoBaseClient(ABC):
 
         self.alerts = []
         self._alerts_loaded = False
+        self.automatic_update = None
         self.calendar = None
         self.config = None
         self.generic_data = None
@@ -80,6 +88,8 @@ class IndegoBaseClient(ABC):
         self.operating_data = None
         self.predictive_calendar = None
         self.predictive_schedule = None
+        self.predictive_setup = None
+        self.predictive_weather = None
         self.security = None
         self.state = None
         self.setup = None
@@ -211,6 +221,22 @@ class IndegoBaseClient(ABC):
         """Update all states."""
 
     @abstractmethod
+    def update_automatic_update(self):
+        """Update the automatic (firmware) update setting."""
+
+    @abstractmethod
+    def get_automatic_update(self):
+        """Update automatic_update and return it."""
+
+    def _update_automatic_update(self, new):
+        """Update the automatic update setting."""
+        self.automatic_update = generate_update(self.automatic_update, new, AutomaticUpdate)
+
+    @abstractmethod
+    def put_automatic_update(self, enabled: bool):
+        """Enable or disable automatic firmware updates."""
+
+    @abstractmethod
     def update_calendar(self):
         """Update calendar."""
 
@@ -233,8 +259,7 @@ class IndegoBaseClient(ABC):
 
     def _update_config(self, new):
         """Update config."""
-        if new:
-            self.config = generate_update(self.config, new, Config)
+        self.config = generate_update(self.config, new, Config)
 
     @abstractmethod
     def update_generic_data(self):
@@ -273,8 +298,7 @@ class IndegoBaseClient(ABC):
 
     def _update_location(self, new):
         """Update location."""
-        if new:
-            self.location = generate_update(self.location, new, Location)
+        self.location = generate_update(self.location, new, Location)
 
     @abstractmethod
     def update_network(self):
@@ -286,8 +310,7 @@ class IndegoBaseClient(ABC):
 
     def _update_network(self, new):
         """Update network."""
-        if new:
-            self.network = generate_update(self.network, new, Network)
+        self.network = generate_update(self.network, new, Network)
 
     @abstractmethod
     def update_next_mow(self):
@@ -343,9 +366,35 @@ class IndegoBaseClient(ABC):
 
     def _update_predictive_schedule(self, new):
         """Update predictive schedule."""
+        self.predictive_schedule = generate_update(
+            self.predictive_schedule, new, PredictiveSchedule
+        )
+
+    @abstractmethod
+    def update_predictive_setup(self):
+        """Update predictive (SmartMowing) setup."""
+
+    @abstractmethod
+    def get_predictive_setup(self):
+        """Update predictive_setup and return it."""
+
+    def _update_predictive_setup(self, new):
+        """Update predictive (SmartMowing) setup."""
+        self.predictive_setup = generate_update(self.predictive_setup, new, PredictiveSetup)
+
+    @abstractmethod
+    def update_predictive_weather(self):
+        """Update the predictive/SmartMowing weather forecast."""
+
+    @abstractmethod
+    def get_predictive_weather(self):
+        """Update predictive_weather and return it."""
+
+    def _update_predictive_weather(self, new):
+        """Update the predictive/SmartMowing weather forecast."""
         if new:
-            self.predictive_schedule = generate_update(
-                self.predictive_schedule, new, PredictiveSchedule
+            self.predictive_weather = generate_update(
+                self.predictive_weather, new.get("LocationWeather"), Weather
             )
 
     @abstractmethod
@@ -358,8 +407,7 @@ class IndegoBaseClient(ABC):
 
     def _update_security(self, new):
         """Update security."""
-        if new:
-            self.security = generate_update(self.security, new, Security)
+        self.security = generate_update(self.security, new, Security)
 
     @abstractmethod
     def update_setup(self):
@@ -371,8 +419,7 @@ class IndegoBaseClient(ABC):
 
     def _update_setup(self, new):
         """Update setup."""
-        if new:
-            self.setup = generate_update(self.setup, new, Setup)
+        self.setup = generate_update(self.setup, new, Setup)
 
     @abstractmethod
     def update_state(self, force=False, longpoll=False, longpoll_timeout=120):
@@ -411,8 +458,7 @@ class IndegoBaseClient(ABC):
 
     def _update_user(self, new):
         """Update users."""
-        if new:
-            self.user = generate_update(self.user, new, User)
+        self.user = generate_update(self.user, new, User)
 
     @abstractmethod
     def _request(
@@ -424,6 +470,51 @@ class IndegoBaseClient(ABC):
         timeout: int = 30,
     ):
         """Request implemented by the subclasses either synchronously or asynchronously."""
+
+    def _serial_path(self, suffix: str = "") -> str:
+        """Build an `alms/{serial}` API path for the current mower, optionally with a sub-path."""
+        if not suffix:
+            return f"alms/{self.serial}"
+        return f"alms/{self.serial}/{suffix}"
+
+    def _build_url(self, path: str) -> str:
+        """Build the full request URL for a given API path."""
+        return f"{self._api_url}{path}"
+
+    def _prepare_headers(self, headers: Optional[dict]) -> dict:
+        """Return the headers to send, defaulting to the standard auth headers."""
+        if headers:
+            return headers
+        headers = self._default_headers.copy()
+        headers["Authorization"] = "Bearer %s" % self._token
+        return headers
+
+    @staticmethod
+    def _redact_headers(headers: dict) -> dict:
+        """Return a copy of headers with the Authorization value redacted, for logging."""
+        redacted = headers.copy()
+        if "Authorization" in redacted:
+            redacted["Authorization"] = "******"
+        return redacted
+
+    def _log_outgoing_request(self, request_id: str, method: Methods, url: str, headers: dict, data: Optional[dict]):
+        """Log an outgoing API request, with the Authorization header redacted."""
+        _LOGGER.debug(
+            "[%s] %s call to API endpoint %s, headers: %s, data: %s",
+            request_id,
+            method.value,
+            url,
+            json.dumps(self._redact_headers(headers)) if headers is not None else '',
+            json.dumps(data) if data is not None else '',
+        )
+
+    @staticmethod
+    def _log_raw_response(request_id: str, content: bytes):
+        """Log a raw (non-JSON, or non-200) response body, truncated if large."""
+        if len(content) < 1000:
+            _LOGGER.debug("[%s] Response (raw): %s", request_id, content)
+        else:
+            _LOGGER.debug("[%s] Response (raw): Not logged, exceeds 1000 characters", request_id)
 
     def _log_request_result(self, request_id: str, status: int, url: str) -> bool:
         """Log the API request result for certain status codes."""
@@ -455,15 +546,16 @@ class IndegoBaseClient(ABC):
     def _get_alert_by_index(self, alert_index: int) -> int:
         """Return the alert_id based on index."""
         if not self._alerts_loaded:
-            raise ValueError("Alerts not loaded, please run update_alerts first.")
+            raise IndegoNotLoadedError("Alerts not loaded, please run update_alerts first.")
         if self.alerts_count == 0:
             _LOGGER.debug("No alerts to get")
             return None
         try:
             return self.alerts[alert_index].alert_id
         except IndexError as exc:
-            raise IndexError(
-                f"Wrong index for the alert, there are {self.alerts_count} alerts, so the highest index is: {self.alerts_count - 1}, supplied was {alert_index}"
+            raise IndegoIndexError(
+                f"Wrong index for the alert, there are {self.alerts_count} alerts, so the "
+                f"highest index is: {self.alerts_count - 1}, supplied was {alert_index}"
             ) from exc
 
     def _update_battery_percentage_adjusted(self):
@@ -484,13 +576,17 @@ class IndegoBaseClient(ABC):
         str1 = (
             f"{self.generic_data.model_description} ({self.generic_data.alm_sn})"
             if self.generic_data
-            else f"Indego mower"
+            else "Indego mower"
         )
-        str2 = f" owned by {self.user.display_name}." if self.user else f"."
+        str2 = f" owned by {self.user.display_name}." if self.user else "."
         str3 = f" {self.generic_data}, " if self.generic_data else ""
         str4 = f" {self.state}, " if self.state else ""
         str5 = f" {self.operating_data}, " if self.operating_data else ""
-        str6 = f", last mowed: {self.last_completed_mow}, next mow: {self.next_mow}, {self.location}, {self.network}, {self.alerts}, map filename: {self.map_filename}, {self.runtime}"
+        str6 = (
+            f", last mowed: {self.last_completed_mow}, next mow: {self.next_mow}, "
+            f"{self.location}, {self.network}, {self.alerts}, "
+            f"map filename: {self.map_filename}, {self.runtime}"
+        )
         str7 = f"{self.operating_data.battery} " if self.operating_data else ""
         str8 = f"update available: {self.update_available}, State Descr: {self.state_description}."
         return f"{str1}{str2}{str3}{str4}{str5}{str6}{str7}{str8}"

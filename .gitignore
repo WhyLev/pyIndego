@@ -17,14 +17,15 @@ idna/
 requests/
 urllib3/
 
-# Test script
-config.py
-config.json
-test_pyIndego.py
-test_replace.py
-release.ps1
-release_pyIndego.ps1
-map.svg
+# Local test/dev scripts (root-level only - do not shadow package modules of the same name,
+# e.g. pyIndego/models/config.py)
+/config.py
+/config.json
+/test_pyIndego.py
+/test_replace.py
+/release.ps1
+/release_pyIndego.ps1
+/map.svg
 
 # Log files
 *.log

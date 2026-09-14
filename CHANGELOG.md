@@ -1,5 +1,48 @@
 # Changelog
 
+## 4.0.0
+The biggest rework of pyIndego to date. The public surface the Home Assistant integration
+(sander1988/Indego) depends on - constructor keyword arguments, `get()`/`put()` returning raw
+JSON/bytes, `update_state`'s `asyncio.TimeoutError`/`aiohttp.ClientResponseError` propagation,
+every model field/attribute path it touches, `state.state` staying a plain `int`,
+`last_completed_mow`/`next_mow` staying real `datetime` objects - is unchanged and still works
+exactly as before. Everything else was reworked:
+
+- Split `pyIndego/states.py` into a `pyIndego.models` package, organized by concern
+  (alert, calendar, mower/state/operating-data, network, config/setup/security, user, and the new
+  predictive-setup/automatic-update/weather modules). `pyIndego.states` now re-exports everything
+  from `pyIndego.models` for backward compatibility.
+- Model construction now tolerates unknown fields from the Bosch API (previously any new field
+  Bosch added to a response would crash construction with `TypeError`); unrecognized fields are
+  dropped and logged at debug level instead.
+- Fixed a latent bug where `CalendarDay.slots`/`Calendar.days`/`PredictiveSchedule.schedule_days`/
+  `.exclusion_days` defaulted to a list containing the *class itself* rather than an empty list.
+- Added `pyIndego.exceptions` with a proper exception hierarchy (`IndegoError` and friends).
+  The exceptions that replace what used to be bare `ValueError`/`IndexError` also still inherit
+  from those built-in types, so existing `except ValueError`/`except IndexError` code keeps working.
+- Added three previously unimplemented features, closing gaps consumers (including the Home
+  Assistant integration) had to work around by calling raw, unmodeled endpoints themselves:
+  `update_predictive_setup()`/`get_predictive_setup()` (`PredictiveSetup` model),
+  `update_automatic_update()`/`get_automatic_update()`/`put_automatic_update()` (`AutomaticUpdate`
+  model), and `update_predictive_weather()`/`get_predictive_weather()` (`Weather` model). None of
+  these are included in `update_all()`, since not every mower generation supports them.
+- Fixed the sync client silently swallowing `Timeout`/`TooManyRedirects`/`RequestException` even
+  when `raise_request_exceptions=True`, and a `KeyError` risk from indexing the `Content-Type`
+  response header instead of using `.get()` - both now behave consistently with the async client.
+- DRYed up the request/response handling shared between the sync and async clients (URL building,
+  header preparation/redaction for logging, status-code interpretation) into the base client.
+- Modernized packaging: replaced `setup.py` with a PEP 621 `pyproject.toml`, added a `py.typed`
+  marker (PEP 561), raised the minimum supported Python version to 3.11.
+- Rewrote and substantially expanded the test suite (split by concern, added coverage for
+  `raise_request_exceptions=True` propagation, unknown-field tolerance, the new endpoints, and a
+  dedicated set of regression tests that encode the Home Assistant integration's exact usage
+  patterns), and switched from the third-party `mock` package to the standard library's
+  `unittest.mock`.
+- Updated CI to a Python 3.11/3.12/3.13 test matrix plus a `ruff` lint job, and switched the
+  release workflow to `python -m build`.
+- Rewrote the README, which had been describing username/password login - inaccurate since the
+  OAuth rework in 3.0.0 - and documented the new features, exception hierarchy and module layout.
+
 ## 3.2.0
 - Removed API retry logic, this gave unexpected results in some cases. Where commands get called after several minutes of delay. Retries should be handled by the application.
 - Fixed longpoll hang where the longpoll exceeds 4 minutes (which is the Azure maximum for inactive long running requests).

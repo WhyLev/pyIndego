@@ -1,10 +1,9 @@
 """API for Bosch API server for Indego lawn mower."""
 import asyncio
 import logging
-import json
 import time
 from socket import error as SocketError
-from typing import Any, Optional, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Optional
 
 import aiohttp
 from aiohttp import (
@@ -15,16 +14,11 @@ from aiohttp import (
 )
 from aiohttp.web_exceptions import HTTPGatewayTimeout
 
-from .const import (
-    COMMANDS,
-    CONTENT_TYPE_JSON,
-    DEFAULT_CALENDAR,
-    DEFAULT_URL,
-    Methods,
-)
-from .indego_base_client import IndegoBaseClient
-from .states import Calendar
+from .const import COMMANDS, CONTENT_TYPE_JSON, DEFAULT_CALENDAR, DEFAULT_URL, Methods
+from .exceptions import IndegoCalendarError, IndegoCommandError, IndegoNotLoadedError, IndegoValueError
 from .helpers import random_request_id
+from .indego_base_client import IndegoBaseClient
+from .models import Calendar
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,7 +44,10 @@ class IndegoAsyncClient(IndegoBaseClient):
             serial (str): serial number of the mower
             map_filename (str, optional): Filename to store maps in. Defaults to None.
             api_url (str, optional): url for the api, defaults to DEFAULT_URL.
-            raise_request_exceptions (bool): Should unexpected API request exception be raised or not. Default False to keep things backwards compatible.
+            session (aiohttp.ClientSession, optional): an externally managed session to reuse.
+                Defaults to None, in which case pyIndego creates (and owns) its own.
+            raise_request_exceptions (bool): Should unexpected API request exceptions be raised
+                or not. Default False to keep things backwards compatible.
         """
         super().__init__(token, token_refresh_method, serial, map_filename, api_url, raise_request_exceptions)
         if session:
@@ -98,8 +95,6 @@ class IndegoAsyncClient(IndegoBaseClient):
             alert_index (int): index of alert to be deleted, should be in range or length of alerts.
 
         """
-        if not self._alerts_loaded:
-            raise ValueError("Alerts not loaded, please run update_alerts first.")
         alert_id = self._get_alert_by_index(alert_index)
         if alert_id:
             return await self._request(Methods.DELETE, f"alerts/{alert_id}/")
@@ -107,7 +102,7 @@ class IndegoAsyncClient(IndegoBaseClient):
     async def delete_all_alerts(self):
         """Delete all the alert."""
         if not self._alerts_loaded:
-            raise ValueError("Alerts not loaded, please run update_alerts first.")
+            raise IndegoNotLoadedError("Alerts not loaded, please run update_alerts first.")
         if self.alerts_count > 0:
             return await asyncio.gather(
                 *[
@@ -122,7 +117,8 @@ class IndegoAsyncClient(IndegoBaseClient):
         """Download the map.
 
         Args:
-            filename (str, optional): Filename for the map. Defaults to None, can also be filled by the filename set in init.
+            filename (str, optional): Filename for the map. Defaults to None, can also be
+                filled by the filename set in init.
 
         """
         if not self.serial:
@@ -130,8 +126,8 @@ class IndegoAsyncClient(IndegoBaseClient):
         if filename:
             self.map_filename = filename
         if not self.map_filename:
-            raise ValueError("No map filename defined.")
-        lawn_map = await self.get(f"alms/{self.serial}/map")
+            raise IndegoValueError("No map filename defined.")
+        lawn_map = await self.get(self._serial_path("map"))
         if lawn_map:
             with open(self.map_filename, "wb") as file:
                 file.write(lawn_map)
@@ -143,8 +139,6 @@ class IndegoAsyncClient(IndegoBaseClient):
             alert_index (int): index of alert to be deleted, should be in range or length of alerts.
 
         """
-        if not self._alerts_loaded:
-            raise ValueError("Alerts not loaded, please run update_alerts first.")
         alert_id = self._get_alert_by_index(alert_index)
         if alert_id:
             return await self._request(
@@ -154,7 +148,7 @@ class IndegoAsyncClient(IndegoBaseClient):
     async def put_all_alerts_read(self):
         """Set to read the read_status of all alerts."""
         if not self._alerts_loaded:
-            raise ValueError("Alerts not loaded, please run update_alerts first.")
+            raise IndegoNotLoadedError("Alerts not loaded, please run update_alerts first.")
         if self.alerts_count > 0:
             return await asyncio.gather(
                 *[
@@ -182,8 +176,8 @@ class IndegoAsyncClient(IndegoBaseClient):
         if command in COMMANDS:
             if not self.serial:
                 return
-            return await self.put(f"alms/{self.serial}/state", {"state": command})
-        raise ValueError("Wrong Command, use one of 'mow', 'pause', 'returnToDock'")
+            return await self.put(self._serial_path("state"), {"state": command})
+        raise IndegoCommandError("Wrong Command, use one of 'mow', 'pause', 'returnToDock'")
 
     async def put_mow_mode(self, command: Any):
         """Set the mower to mode manual (false-ish) or predictive (true-ish).
@@ -199,19 +193,19 @@ class IndegoAsyncClient(IndegoBaseClient):
             if not self.serial:
                 return
             return await self.put(
-                f"alms/{self.serial}/predictive", {"enabled": command}
+                self._serial_path("predictive"), {"enabled": command}
             )
-        raise ValueError("Wrong Command, use one True or False")
+        raise IndegoCommandError("Wrong Command, use one True or False")
 
     async def put_predictive_cal(self, calendar: dict = DEFAULT_CALENDAR):
         """Set the predictive calendar."""
         try:
             Calendar(**calendar["cals"][0])
         except TypeError as exc:
-            raise ValueError("Value for calendar is not valid") from exc
+            raise IndegoCalendarError("Value for calendar is not valid") from exc
         if not self.serial:
             return
-        return await self.put(f"alms/{self.serial}/predictive/calendar", calendar)
+        return await self.put(self._serial_path("predictive/calendar"), calendar)
 
     async def update_alerts(self):
         """Update alerts."""
@@ -247,11 +241,30 @@ class IndegoAsyncClient(IndegoBaseClient):
             if res:
                 _LOGGER.warning(res)
 
+    async def update_automatic_update(self):
+        """Update the automatic (firmware) update setting."""
+        if not self.serial:
+            return
+        self._update_automatic_update(await self.get(self._serial_path("automaticUpdate")))
+
+    async def get_automatic_update(self):
+        """Update automatic_update and return it."""
+        await self.update_automatic_update()
+        return self.automatic_update
+
+    async def put_automatic_update(self, enabled: bool):
+        """Enable or disable automatic firmware updates."""
+        if not self.serial:
+            return
+        return await self.put(
+            self._serial_path("automaticUpdate"), {"allow_automatic_update": bool(enabled)}
+        )
+
     async def update_calendar(self):
         """Update calendar."""
         if not self.serial:
             return
-        self._update_calendar(await self.get(f"alms/{self.serial}/calendar"))
+        self._update_calendar(await self.get(self._serial_path("calendar")))
 
     async def get_calendar(self):
         """Update calendar and return them."""
@@ -262,7 +275,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         """Update config."""
         if not self.serial:
             return
-        self._update_config(await self.get(f"alms/{self.serial}/config"))
+        self._update_config(await self.get(self._serial_path("config")))
 
     async def get_config(self):
         """Update config and return it."""
@@ -273,7 +286,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         """Update generic data."""
         if not self.serial:
             return
-        self._update_generic_data(await self.get(f"alms/{self.serial}"))
+        self._update_generic_data(await self.get(self._serial_path()))
 
     async def get_generic_data(self):
         """Update generic_data and return it."""
@@ -285,7 +298,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         if not self.serial:
             return
         self._update_last_completed_mow(
-            await self.get(f"alms/{self.serial}/predictive/lastcutting")
+            await self.get(self._serial_path("predictive/lastcutting"))
         )
 
     async def get_last_completed_mow(self):
@@ -297,7 +310,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         """Update location."""
         if not self.serial:
             return
-        self._update_location(await self.get(f"alms/{self.serial}/predictive/location"))
+        self._update_location(await self.get(self._serial_path("predictive/location")))
 
     async def get_location(self):
         """Update location and return it."""
@@ -308,7 +321,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         """Update network."""
         if not self.serial:
             return
-        self._update_network(await self.get(f"alms/{self.serial}/network"))
+        self._update_network(await self.get(self._serial_path("network")))
 
     async def get_network(self):
         """Update network and return it."""
@@ -320,7 +333,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         if not self.serial:
             return
         self._update_next_mow(
-            await self.get(f"alms/{self.serial}/predictive/nextcutting")
+            await self.get(self._serial_path("predictive/nextcutting"))
         )
 
     async def get_next_mow(self):
@@ -332,7 +345,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         """Update operating data."""
         if not self.serial:
             return
-        self._update_operating_data(await self.get(f"alms/{self.serial}/operatingData"))
+        self._update_operating_data(await self.get(self._serial_path("operatingData")))
 
     async def get_operating_data(self):
         """Update operating_data and return it."""
@@ -344,7 +357,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         if not self.serial:
             return
         self._update_predictive_calendar(
-            await self.get(f"alms/{self.serial}/predictive/calendar")
+            await self.get(self._serial_path("predictive/calendar"))
         )
 
     async def get_predictive_calendar(self):
@@ -357,7 +370,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         if not self.serial:
             return
         self._update_predictive_schedule(
-            await self.get(f"alms/{self.serial}/predictive/schedule")
+            await self.get(self._serial_path("predictive/schedule"))
         )
 
     async def get_predictive_schedule(self):
@@ -365,11 +378,33 @@ class IndegoAsyncClient(IndegoBaseClient):
         await self.update_predictive_schedule()
         return self.predictive_schedule
 
+    async def update_predictive_setup(self):
+        """Update predictive (SmartMowing) setup."""
+        if not self.serial:
+            return
+        self._update_predictive_setup(await self.get(self._serial_path("predictive/setup")))
+
+    async def get_predictive_setup(self):
+        """Update predictive_setup and return it."""
+        await self.update_predictive_setup()
+        return self.predictive_setup
+
+    async def update_predictive_weather(self):
+        """Update the predictive/SmartMowing weather forecast."""
+        if not self.serial:
+            return
+        self._update_predictive_weather(await self.get(self._serial_path("predictive/weather")))
+
+    async def get_predictive_weather(self):
+        """Update predictive_weather and return it."""
+        await self.update_predictive_weather()
+        return self.predictive_weather
+
     async def update_security(self):
         """Update security."""
         if not self.serial:
             return
-        self._update_security(await self.get(f"alms/{self.serial}/security"))
+        self._update_security(await self.get(self._serial_path("security")))
 
     async def get_security(self):
         """Update security and return it."""
@@ -380,7 +415,7 @@ class IndegoAsyncClient(IndegoBaseClient):
         """Update setup."""
         if not self.serial:
             return
-        self._update_setup(await self.get(f"alms/{self.serial}/setup"))
+        self._update_setup(await self.get(self._serial_path("setup")))
 
     async def get_setup(self):
         """Update setup and return it."""
@@ -402,12 +437,12 @@ class IndegoAsyncClient(IndegoBaseClient):
         if not self.serial:
             return
 
-        path = f"alms/{self.serial}/state"
+        path = self._serial_path("state")
         if longpoll:
             # 4 minutes (240 sec) max, so 230 is the absolute maximum (due to the 10 sec request timeout).
             # See https://learn.microsoft.com/en-us/azure/load-balancer/load-balancer-tcp-reset
             if longpoll_timeout <= 0 or longpoll_timeout > 230:
-                raise ValueError(
+                raise IndegoValueError(
                     "Longpoll timeout outside valid range (1-230)."
                 )
             last_state = 0
@@ -440,7 +475,7 @@ class IndegoAsyncClient(IndegoBaseClient):
             return
         if self._online:
             self._update_updates_available(
-                await self.get(f"alms/{self.serial}/updates")
+                await self.get(self._serial_path("updates"))
             )
 
     async def get_updates_available(self):
@@ -477,26 +512,13 @@ class IndegoAsyncClient(IndegoBaseClient):
         """
         await self.start()
 
-        url = f"{self._api_url}{path}"
-
-        if not headers:
-            headers = self._default_headers.copy()
-            headers["Authorization"] = "Bearer %s" % self._token
+        url = self._build_url(path)
+        headers = self._prepare_headers(headers)
 
         request_id = random_request_id()
         request_start_time = None
         try:
-            log_headers = headers.copy()
-            if 'Authorization' in log_headers:
-                log_headers['Authorization'] = '******'
-            _LOGGER.debug(
-                "[%s] %s call to API endpoint %s, headers: %s, data: %s",
-                request_id,
-                method.value,
-                url,
-                json.dumps(log_headers) if log_headers is not None else '',
-                json.dumps(data) if data is not None else '',
-            )
+            self._log_outgoing_request(request_id, method, url, headers, data)
 
             request_start_time = time.time()
             async with self._session.request(
@@ -517,10 +539,7 @@ class IndegoAsyncClient(IndegoBaseClient):
                         return resp
 
                 resp = await response.content.read()
-                if len(resp) < 1000:
-                    _LOGGER.debug("[%s] Response (raw): %s", request_id, resp)
-                else:
-                    _LOGGER.debug("[%s] Response (raw): Not logged, exceeds 1000 characters", request_id)
+                self._log_raw_response(request_id, resp)
 
                 if status == 200:
                     return resp

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyIndego"
+dynamic = ["version"]
+description = "API for Bosch Indego mower"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "jm-73" },
+    { name = "sander1988" },
+]
+requires-python = ">=3.11"
+dependencies = [
+    "requests",
+    "aiohttp",
+    "pytz",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/sander1988/pyIndego"
+Repository = "https://github.com/sander1988/pyIndego"
+"Home Assistant integration" = "https://github.com/sander1988/Indego"
+
+[project.optional-dependencies]
+testing = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "pyIndego.version.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["pyIndego*"]
+
+[tool.setuptools.package-data]
+pyIndego = ["py.typed"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Parametrized test tables read better as one row per line, even when long.
+"tests/*" = ["E501"]
